@@ -239,3 +239,4 @@ agent-os/
 evals/data/
 *.zip
 !evals/results/
+evals/models/

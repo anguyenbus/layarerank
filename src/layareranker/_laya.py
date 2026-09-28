@@ -8,6 +8,7 @@ by real-checkpoint tests (`pytest -m model`).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from laya.agent import Agent
@@ -100,6 +101,11 @@ class LayaTokenizer:
 
 
 def load_agent(settings: Settings) -> Any:
-    """Load exactly one pinned checkpoint through laya's Router (cache and digest verification)."""
+    """Load exactly one pinned checkpoint through laya's Router (cache and digest verification).
+
+    A `model` that names a local directory is loaded directly, e.g. a fine-tuned checkpoint.
+    """
+    if Path(settings.model).is_dir():
+        return Agent(settings.model, device=settings.device)
     router = Router(device=settings.device, revision=settings.revision, max_loaded=1)
     return router.load(settings.model)

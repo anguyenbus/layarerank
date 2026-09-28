@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from evals.beir import Pool
@@ -38,6 +39,9 @@ class Laya:
 
         _, model, preset, *rest = spec.split(":")
         long_doc = rest[0] if rest else "truncate"
+        local = Path(__file__).parent / "models" / model  # fine-tuned checkpoints from evals.finetune
+        if local.is_dir():
+            model = str(local)
         self.name = spec
         self._scorer = Scorer.load(
             Settings(

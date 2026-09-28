@@ -26,19 +26,20 @@ class Pool:
     relevant: dict[str, int]  # every judged-relevant doc for the query, graded
 
 
-def pool_path(dataset: str, k: int) -> Path:
-    return DATA_DIR / f"{dataset}.bm25-top{k}.jsonl"
+def pool_path(dataset: str, k: int, split: str = "test") -> Path:
+    name = dataset if split == "test" else f"{dataset}-{split}"
+    return DATA_DIR / f"{name}.bm25-top{k}.jsonl"
 
 
-def build_pools(dataset: str, k: int) -> Path:
-    """Retrieve BM25 top-k for every test query with at least one relevant document."""
+def build_pools(dataset: str, k: int, split: str = "test") -> Path:
+    """Retrieve BM25 top-k for every query in `split` with at least one relevant document."""
     import bm25s
     from datasets import load_dataset
 
     corpus = load_dataset(f"BeIR/{dataset}", "corpus", split="corpus")
     queries = {str(r["_id"]): r["text"] for r in load_dataset(f"BeIR/{dataset}", "queries", split="queries")}
     relevant: dict[str, dict[str, int]] = {}
-    for row in load_dataset(f"BeIR/{dataset}-qrels", split="test"):
+    for row in load_dataset(f"BeIR/{dataset}-qrels", split=split):
         if row["score"] > 0:
             relevant.setdefault(str(row["query-id"]), {})[str(row["corpus-id"])] = int(row["score"])
 
@@ -53,7 +54,7 @@ def build_pools(dataset: str, k: int) -> Path:
         k=k,
         show_progress=False,
     )
-    path = pool_path(dataset, k)
+    path = pool_path(dataset, k, split)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as out:
         for row, qid in enumerate(qids):
@@ -70,15 +71,15 @@ def build_pools(dataset: str, k: int) -> Path:
     return path
 
 
-def load_pools(dataset: str, k: int, limit: int | None = None) -> list[Pool]:
+def load_pools(dataset: str, k: int, limit: int | None = None, split: str = "test") -> list[Pool]:
     """Load answerable pools (a judged-relevant doc is among the candidates).
 
     Unanswerable pools score zero for every reranker, so they only cost compute. `limit` takes a
     deterministic, id-hashed sample so subsets are reproducible.
     """
-    path = pool_path(dataset, k)
+    path = pool_path(dataset, k, split)
     if not path.exists():
-        build_pools(dataset, k)
+        build_pools(dataset, k, split)
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     rows = [r for r in rows if any(c["doc_id"] in r["relevant"] for c in r["candidates"])]
     rows.sort(key=lambda r: hashlib.sha1(f"{dataset}:{r['qid']}".encode()).hexdigest())
