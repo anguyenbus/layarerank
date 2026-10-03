@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=1.26",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "strands-decider==0.1.0",
 ]
 
 [project.optional-dependencies]

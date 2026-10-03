@@ -11,13 +11,13 @@ from statistics import mean
 
 from evals.beir import load_pools
 from evals.metrics import METRICS, paired_bootstrap
-from evals.run import RESULTS_DIR, result_path
+from evals.run import result_dir, result_path
 
 
-def per_query(dataset: str, k: int, system: str) -> dict[str, dict[str, float]]:
+def per_query(dataset: str, k: int, system: str, split: str = "test") -> dict[str, dict[str, float]]:
     """Metric values per query for one system, from its stored scores (ties broken by BM25 order)."""
-    relevant = {p.qid: p.relevant for p in load_pools(dataset, k)}
-    rows = [json.loads(line) for line in result_path(dataset, k, system).read_text().splitlines()]
+    relevant = {p.qid: p.relevant for p in load_pools(dataset, k, split=split)}
+    rows = [json.loads(line) for line in result_path(dataset, k, system, split).read_text().splitlines()]
     out = {}
     for row in rows:
         order = sorted(range(len(row["scores"])), key=lambda i: (-row["scores"][i], i))
@@ -36,11 +36,12 @@ def main() -> None:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--k", type=int, default=30)
     parser.add_argument("--candidate", required=True, help="the system being gated")
+    parser.add_argument("--split", default="test", help="BEIR qrels split: test, validation or train")
     args = parser.parse_args()
 
-    folder = RESULTS_DIR / f"{args.dataset}.top{args.k}"
+    folder = result_dir(args.dataset, args.k, args.split)
     systems = sorted(p.stem for p in folder.glob("*.jsonl"))
-    data = {s: per_query(args.dataset, args.k, s) for s in systems}
+    data = {s: per_query(args.dataset, args.k, s, args.split) for s in systems}
     shared = sorted(set.intersection(*(set(d) for d in data.values())))
     print(f"{args.dataset}: {len(shared)} queries scored by all of {systems}\n")
     columns = [*METRICS, "truncated_frac", "tie_at_10", "ms_per_pair"]

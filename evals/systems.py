@@ -76,4 +76,11 @@ def make_system(spec: str) -> System:
         return Bge()
     if spec.startswith("laya:"):
         return Laya(spec)
-    raise ValueError(f"unknown system {spec!r}; use bm25, bge or laya:<model>:<preset>[:window_max]")
+    if spec.startswith("decider:"):
+        from evals.decider import Decider
+
+        return Decider(spec)
+    raise ValueError(
+        f"unknown system {spec!r}; use bm25, bge, laya:<model>:<preset>[:window_max] "
+        "or decider:<model>:<preset>"
+    )

@@ -16,13 +16,18 @@ from evals.systems import make_system
 RESULTS_DIR = Path(__file__).parent / "results"
 
 
-def result_path(dataset: str, k: int, system: str) -> Path:
-    return RESULTS_DIR / f"{dataset}.top{k}" / f"{system.replace(':', '_')}.jsonl"
+def result_dir(dataset: str, k: int, split: str = "test") -> Path:
+    name = dataset if split == "test" else f"{dataset}-{split}"
+    return RESULTS_DIR / f"{name}.top{k}"
 
 
-def run(dataset: str, system_spec: str, k: int, queries: int | None) -> Path:
-    pools = load_pools(dataset, k, queries)
-    path = result_path(dataset, k, system_spec)
+def result_path(dataset: str, k: int, system: str, split: str = "test") -> Path:
+    return result_dir(dataset, k, split) / f"{system.replace(':', '_')}.jsonl"
+
+
+def run(dataset: str, system_spec: str, k: int, queries: int | None, split: str = "test") -> Path:
+    pools = load_pools(dataset, k, queries, split)
+    path = result_path(dataset, k, system_spec, split)
     path.parent.mkdir(parents=True, exist_ok=True)
     done = {json.loads(line)["qid"] for line in path.read_text().splitlines()} if path.exists() else set()
     todo = [p for p in pools if p.qid not in done]
@@ -57,9 +62,10 @@ def main() -> None:
     parser.add_argument("--system", action="append", required=True)
     parser.add_argument("--k", type=int, default=30)
     parser.add_argument("--queries", type=int)
+    parser.add_argument("--split", default="test", help="BEIR qrels split: test, validation or train")
     args = parser.parse_args()
     for spec in args.system:
-        run(args.dataset, spec, args.k, args.queries)
+        run(args.dataset, spec, args.k, args.queries, args.split)
 
 
 if __name__ == "__main__":
