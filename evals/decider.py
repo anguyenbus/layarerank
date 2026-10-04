@@ -146,3 +146,21 @@ class Decider:
             for i, value in zip(chunk, values, strict=True):
                 scores[i] = value
         return Scored(scores, truncated=sum(r.truncated for r in rows))
+
+    def param_groups(self, lr_head: float, lr_backbone: float) -> list[dict[str, Any]]:
+        """Train the pointer head and the LoRA adapter; the 2B base stays frozen."""
+        for name, param in self.model.torso.named_parameters():
+            param.requires_grad = "lora_" in name
+        base = getattr(self.model.torso, "base_model", self.model.torso)
+        inner = getattr(base, "model", base)
+        # use_reentrant=False lets checkpointing coexist with LoRA (inputs carry no grad).
+        inner.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        lora = [p for p in self.model.torso.parameters() if p.requires_grad]
+        return [
+            {"params": list(self.model.head.parameters()), "lr": lr_head, "weight_decay": 0.01},
+            {"params": lora, "lr": lr_backbone, "weight_decay": 0.0},
+        ]
+
+    def save(self, out: Path) -> None:
+        """Write the adapter, head, config and tokenizer so `StrandsDeciderModel.load` reads them."""
+        self.model.eval().save_pretrained(str(out))

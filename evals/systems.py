@@ -80,7 +80,11 @@ def make_system(spec: str) -> System:
         from evals.decider import Decider
 
         return Decider(spec)
+    if spec.startswith("kai:"):
+        from evals.kai import Kai
+
+        return Kai(spec)
     raise ValueError(
-        f"unknown system {spec!r}; use bm25, bge, laya:<model>:<preset>[:window_max] "
-        "or decider:<model>:<preset>"
+        f"unknown system {spec!r}; use bm25, bge, laya:<model>:<preset>[:window_max], "
+        "decider:<model>:<preset> or kai:<model>:<preset>"
     )
