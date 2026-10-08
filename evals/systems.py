@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Protocol
 
@@ -69,22 +70,28 @@ class Bge:
         return Scored([float(s) for s in self._model.predict(pairs, batch_size=16)], truncated=0)
 
 
+# family -> (module, class); each imports its own heavy dependency only when selected
+_DECISION_MODELS = {
+    "decider": ("evals.decider", "Decider"),
+    "kai": ("evals.kai", "Kai"),
+    "mapika": ("evals.mapika", "Mapika"),
+    "d1": ("evals.d1", "D1"),
+}
+
+
 def make_system(spec: str) -> System:
     if spec == "bm25":
         return Bm25()
     if spec == "bge":
         return Bge()
-    if spec.startswith("laya:"):
+    family = spec.split(":", maxsplit=1)[0]
+    if family == "laya":
         return Laya(spec)
-    if spec.startswith("decider:"):
-        from evals.decider import Decider
-
-        return Decider(spec)
-    if spec.startswith("kai:"):
-        from evals.kai import Kai
-
-        return Kai(spec)
+    if family in _DECISION_MODELS:
+        module, name = _DECISION_MODELS[family]
+        system: System = getattr(import_module(module), name)(spec)
+        return system
     raise ValueError(
-        f"unknown system {spec!r}; use bm25, bge, laya:<model>:<preset>[:window_max], "
-        "decider:<model>:<preset> or kai:<model>:<preset>"
+        f"unknown system {spec!r}; use bm25, bge, laya:<model>:<preset>[:window_max] or "
+        f"<family>:<model>:<preset> with a family in {sorted(_DECISION_MODELS)}"
     )
