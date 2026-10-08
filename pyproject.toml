@@ -26,6 +26,7 @@ eval = [
     "bm25s>=0.2",
     "datasets>=3.0",
     "sentence-transformers>=3.0",
+    "decider-ai==1.9.0",
 ]
 
 [dependency-groups]
@@ -39,6 +40,13 @@ dev = [
 
 [tool.uv]
 conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+
+# decider-ai lists flash-linear-attention for its Qwen models; the Gemma checkpoint evaluated here does
+# not use it, and installing it shifts Strands Decider's scores (fiqa-decider-2026-10-03.md, §4.5).
+[[tool.uv.dependency-metadata]]
+name = "decider-ai"
+version = "1.9.0"
+requires-dist = ["torch", "transformers>=5", "numpy", "huggingface_hub", "jinja2"]
 
 [tool.uv.sources]
 torch = [

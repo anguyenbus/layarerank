@@ -1,13 +1,14 @@
-"""Fine-tune a decision model (Strands Decider, Kai) as a reranker on a BEIR train split.
+"""Fine-tune a decision model (Strands Decider, Kai, d1) as a reranker on a BEIR train split.
 
 python -m evals.finetune_decider --dataset fiqa --out decider-ft-fiqa --preset noul-question
 python -m evals.finetune_decider --family kai --lr-backbone 2e-5 --out kai-ft-fiqa --preset noul-question
 
 The same recipe as `evals.finetune` (BM25 hard negatives, a listwise softmax over each query's
 true-minus-false margins plus a smaller pointwise term, best dev nDCG@10 kept), applied to what
-each family trains: Decider's LoRA adapter and pointer head with the 2B base frozen, or all of Kai
-but its token embeddings. The best checkpoint is written to `evals/models/<out>/` in the layout the
-family loads; score it with the spec `<family>:<out>:<preset>`.
+each family trains: Decider's LoRA adapter and pointer head with the 2B base frozen, all of Kai
+but its token embeddings, or a new LoRA adapter on d1 with the 3B base frozen. The best checkpoint
+is written to `evals/models/<out>/` in the layout the family loads; score it with the spec
+`<family>:<out>:<preset>`.
 """
 
 from __future__ import annotations
@@ -24,14 +25,17 @@ import torch
 import torch.nn.functional as F
 
 from evals.beir import Pool, load_pools
+from evals.d1 import D1
 from evals.decider import MODELS_DIR, Decider, Row
 from evals.kai import Kai
-from evals.metrics import ndcg_at
+from evals.metrics import METRICS
 
 # family -> (system class, default starting checkpoint)
-FAMILIES: dict[str, tuple[type[Decider] | type[Kai], str]] = {
+Reranker = Decider | Kai | D1
+FAMILIES: dict[str, tuple[type[Decider] | type[Kai] | type[D1], str]] = {
     "decider": (Decider, "2b"),
     "kai": (Kai, "0.6b"),
+    "d1": (D1, "3b"),
 }
 
 
@@ -50,12 +54,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-row-tokens", type=int, default=512, help="training rows only")
     parser.add_argument("--lr-head", type=float, default=1e-4)
     parser.add_argument(
-        "--lr-backbone", "--lr-lora", type=float, default=1e-4, help="Decider's LoRA adapter, Kai's backbone"
+        "--lr-backbone", "--lr-lora", type=float, default=1e-4, help="a LoRA adapter, Kai's backbone"
     )
     parser.add_argument("--pointwise-weight", type=float, default=0.5)
     parser.add_argument("--evals-per-epoch", type=int, default=3)
     parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--dev-queries", type=int, help="select on a sample of the dev queries")
+    parser.add_argument("--select", default="ndcg@10", choices=sorted(METRICS), help="dev metric to keep by")
     parser.add_argument("--max-steps", type=int, help="cap the run (timing probe)")
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--seed", type=int, default=13)
@@ -64,17 +69,17 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def evaluate(decider: Decider | Kai, pools: list[Pool]) -> float:
+def evaluate(decider: Reranker, pools: list[Pool], metric: str = "ndcg@10") -> float:
     decider.model.eval()
     scores = []
     for pool in pools:
         scored = decider.score(pool).scores
         order = sorted(range(len(pool.candidates)), key=lambda i: (-scored[i], i))
-        scores.append(ndcg_at([pool.candidates[i].doc_id for i in order], pool.relevant))
+        scores.append(METRICS[metric]([pool.candidates[i].doc_id for i in order], pool.relevant))
     return mean(scores)
 
 
-def encode_pools(decider: Decider | Kai, pools: list[Pool], max_tokens: int) -> list[dict[str, list[Row]]]:
+def encode_pools(decider: Reranker, pools: list[Pool], max_tokens: int) -> list[dict[str, list[Row]]]:
     """Every candidate of every pool, encoded once and split into judged-relevant and the rest."""
     encoded = []
     for p in pools:
@@ -91,7 +96,7 @@ def trainable_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
 
 
 def make_optimizer(
-    decider: Decider | Kai, args: argparse.Namespace, total: int
+    decider: Reranker, args: argparse.Namespace, total: int
 ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR]:
     """AdamW over the family's trainable parameters, 5% warm-up then cosine decay."""
     optimizer = torch.optim.AdamW(decider.param_groups(args.lr_head, args.lr_backbone))
@@ -103,7 +108,10 @@ def make_optimizer(
 
 
 def train_step(
-    decider: Decider | Kai, encoded: list[dict[str, list[Row]]], queries: list[int], args: argparse.Namespace
+    decider: Reranker,
+    encoded: list[dict[str, list[Row]]],
+    queries: list[int],
+    args: argparse.Namespace,
 ) -> float:
     """Accumulate gradients over `queries` (micro-batched by whole queries); returns the mean loss."""
     decider.model.train()
@@ -129,7 +137,7 @@ def train_step(
 
 
 def save_checkpoint(
-    decider: Decider | Kai, state: dict[str, torch.Tensor], name: str, meta: dict[str, Any]
+    decider: Reranker, state: dict[str, torch.Tensor], name: str, meta: dict[str, Any]
 ) -> None:
     """Restore the best trainable weights and write them in the layout the family loads."""
     decider.model.load_state_dict(state, strict=False)
@@ -162,10 +170,10 @@ def main() -> None:
     )
     eval_every = max(1, steps_per_epoch // args.evals_per_epoch)
 
-    best, best_step, stale = evaluate(decider, dev), 0, 0
+    best, best_step, stale = evaluate(decider, dev, args.select), 0, 0
     best_state = trainable_state(model)
-    print(f"step 0 | dev ndcg@10 {best:.4f} (untrained)", flush=True)
-    history = [{"step": 0, "epoch": 0.0, "dev_ndcg@10": best}]
+    print(f"step 0 | dev {args.select} {best:.4f} (untrained)", flush=True)
+    history = [{"step": 0, "epoch": 0.0, f"dev_{args.select}": best}]
     step, t0 = 0, time.time()
     order: list[int] = []
     while step < total and stale < args.patience:
@@ -186,8 +194,10 @@ def main() -> None:
                 flush=True,
             )
         if step % eval_every == 0 or step == total:
-            score = evaluate(decider, dev)
-            history.append({"step": step, "epoch": round(step / steps_per_epoch, 2), "dev_ndcg@10": score})
+            score = evaluate(decider, dev, args.select)
+            history.append(
+                {"step": step, "epoch": round(step / steps_per_epoch, 2), f"dev_{args.select}": score}
+            )
             if score > best:
                 best, best_step, stale = score, step, 0
                 best_state = trainable_state(model)
@@ -195,14 +205,15 @@ def main() -> None:
                 stale += 1
             epoch = step / steps_per_epoch
             print(
-                f"step {step} (epoch {epoch:.2f}) | dev ndcg@10 {score:.4f} | best {best:.4f} @ {best_step}",
+                f"step {step} (epoch {epoch:.2f}) | dev {args.select} {score:.4f} "
+                f"| best {best:.4f} @ {best_step}",
                 flush=True,
             )
 
     meta = {
         "args": vars(args),
         "best_step": best_step,
-        "best_dev_ndcg@10": best,
+        f"best_dev_{args.select}": best,
         "steps_per_epoch": steps_per_epoch,
         "history": history,
     }
